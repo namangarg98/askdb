@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      # Throwaway values for the CI database only. The tests never call the Claude API,
+      # so no real API key is needed.
+      - name: Create CI settings
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_USER=askdb_admin
+          POSTGRES_PASSWORD=ci-admin-password
+          ASKDB_READONLY_PASSWORD=ci-readonly-password
+          ASKDB_APP_PASSWORD=ci-app-password
+          ANTHROPIC_API_KEY=ci-not-used
+          ASKDB_CLIENT_ID_SECRET=ci-client-id-secret-123456
+          EOF
+
+      # The same database a new user gets: Northwind, the read-only role (Layer 1) and AskDB's own database,
+      # built from the repository's init scripts. The integration tests run against it.
+      - name: Start PostgreSQL
+        run: |
+          docker compose up -d
+          # Ready once AskDB's own database (created by the last init script) accepts its login.
+          for i in $(seq 1 60); do
+            PGPASSWORD=ci-app-password psql -h 127.0.0.1 -p 5433 -U askdb_app -d askdb_meta -c 'SELECT 1' >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+
+      - name: Security check (Layer 1)
+        run: ./scripts/verify-db-security.sh
+
+      - name: Server - install, typecheck, test
+        working-directory: server
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Client - install, build
+        working-directory: client
+        run: |
+          npm ci
+          npm run build

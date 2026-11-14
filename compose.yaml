@@ -1,0 +1,39 @@
+# AskDB local infrastructure (works with `podman compose` and `docker compose`).
+#
+# Step 1: a PostgreSQL 17 database with the pgvector extension available,
+# seeded with the Northwind sample data, plus a locked-down read-only role
+# that the AskDB server will use to run AI-generated SQL.
+
+name: askdb
+
+services:
+  db:
+    image: docker.io/pgvector/pgvector:pg17
+    container_name: askdb-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: northwind
+      # Read by db/init/02-readonly-role.sh when the database is first created.
+      ASKDB_READONLY_PASSWORD: ${ASKDB_READONLY_PASSWORD:?set ASKDB_READONLY_PASSWORD in .env}
+      # Read by db/init/03-meta-db.sh.
+      ASKDB_APP_PASSWORD: ${ASKDB_APP_PASSWORD:?set ASKDB_APP_PASSWORD in .env}
+    ports:
+      # Bind to localhost only, so the database is not reachable from the network.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - askdb-pgdata:/var/lib/postgresql/data
+      # Scripts in /docker-entrypoint-initdb.d run once, in name order, on first start.
+      - ./db/seed/northwind.sql:/docker-entrypoint-initdb.d/01-northwind.sql:ro
+      - ./db/init/02-readonly-role.sh:/docker-entrypoint-initdb.d/02-readonly-role.sh:ro
+      # The generic read-only role script, used by 02-readonly-role.sh.
+      - ./scripts/create-readonly-role.sql:/askdb/create-readonly-role.sql:ro
+      - ./db/init/03-meta-db.sh:/docker-entrypoint-initdb.d/03-meta-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d northwind"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  askdb-pgdata:
